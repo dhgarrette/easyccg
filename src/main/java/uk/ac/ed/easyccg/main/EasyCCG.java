@@ -205,11 +205,13 @@ public class EasyCCG
     if (commandLineOptions.getOutputFile().getName().isEmpty()) {
       // Write to STDOUT
       sysoutTemp = new OutputStreamWriter(System.out);
+      System.err.println("Outputting to stdout");
     } else {
       File outputFile = commandLineOptions.getOutputFile();
       // Make the directory if it doesn't already exist
       outputFile.getAbsoluteFile().getParentFile().mkdirs();
       sysoutTemp = new FileWriter(outputFile);
+      System.err.println("Outputting to " + outputFile);
     }
     final BufferedWriter sysout = new BufferedWriter(sysoutTemp);
 

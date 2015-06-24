@@ -8,33 +8,62 @@ import uk.ac.ed.easyccg.main.EasyCCG
  */
 object Parse {
 
+  val WordPosCat = """(.*)\|([^|]*)\|([^|]*)""".r
+
+  // cd ~/bin/easyccg/; java -jar easyccg.jar --model training/chinese-embeddings/model.chinese-250k 
+  //                                          --inputFile chinese-dev-tokenized.txt  
+  //                                          --inputFormat tokenized  
+  //                                          --outputFormat supertags  
+  //                                          > training/chinese-embeddings/model.chinese-250k/chinese-dev-tokenized.out
+
+  // cd ~/bin/easyccg/; java -jar easyccg.jar --model data/chinese/chinese-embeddings/model.chinese-250k 
+  //                                          --inputFile data/chinese/chinese-dev-tokenized.txt  
+  //                                          --inputFormat tokenized  
+  //                                          --outputFormat supertags  
+  //                                          --outputFile data/chinese/chinese-250k/chinese-dev-tagged.out
+
   def main(args: Array[String]): Unit = {
 
     val (arguments, options) = parseArgs(args)
 
     val modelDir = options("model") // training/chinese-embeddings/model.chinese-250k
-    val inputFile = options("inputFile")
-    val outputFile = options("outputFile")
+    val inputFileOpt = options.get("inputFile") // tokenized
+    val evalFileOpt = options.get("evalFile") // word|pos|supertag
+    val outputFileOpt = options.get("outputFile") // outputs as: word|pos|supertag
 
-    // cd ~/bin/easyccg/; java -jar easyccg.jar --model training/chinese-embeddings/model.chinese-250k 
-    //                                          --inputFile chinese-dev-tokenized.txt  
-    //                                          --inputFormat tokenized  
-    //                                          --outputFormat supertags  
-    //                                          > training/chinese-embeddings/model.chinese-250k/chinese-dev-tokenized.out
+    val taggerInputFile = (inputFileOpt, evalFileOpt) match {
+      case (Some(inputFile), None) => inputFile
+      case (None, Some(evalFile)) =>
+        val fakedInputFile = java.io.File.createTempFile(File(evalFile).getName.rsplit("\\.", 2).head, ".in")
+        writeUsing(fakedInputFile) { w =>
+          File(evalFile).readLines.foreach { line =>
+            w.wl(line.splitWhitespace.map { case WordPosCat(w, p, c) => w }.mkString(" "))
+          }
+        }
+        fakedInputFile.getAbsolutePath
+      case _ => sys.error("specify exactly one of --inputFile or --evalFile")
+    }
 
-    // cd ~/bin/easyccg/; java -jar easyccg.jar --model data/chinese/chinese-embeddings/model.chinese-250k 
-    //                                          --inputFile data/chinese/chinese-dev-tokenized.txt  
-    //                                          --inputFormat tokenized  
-    //                                          --outputFormat supertags  
-    //                                          --outputFile data/chinese/chinese-250k/chinese-dev-tagged.out
+    val taggerOutputFile = outputFileOpt.getOrElse(java.io.File.createTempFile(File(taggerInputFile).getName.rsplit("\\.", 2).head, ".out").getAbsolutePath)
 
     EasyCCG.main(Array(
       "--model", modelDir,
-      "--inputFile", inputFile,
+      "--inputFile", taggerInputFile,
       "--inputFormat", "tokenized",
       "--outputFormat", "supertags",
-      "--outputFile", outputFile))
+      "--outputFile", taggerOutputFile))
+    if (outputFileOpt.isEmpty) File(taggerOutputFile).readLines.foreach(println)
 
+    evalFileOpt.foreach { evalFile =>
+      val accuracy =
+        (File(evalFile).readLines zipSafe File(taggerOutputFile).readLines).zipWithIndex.map {
+          case ((WordPosCat(gw, gp, gc), WordPosCat(mw, mp, mc)), lineNum) =>
+            assert(gw == mw, f"words don't match: [$lineNum]  gold=$gw, model-output=$mw")
+            if (gc == mc) 1 else 0
+        }.avg
+
+      println(f"accuracy: $accuracy%.2f")
+    }
   }
 
 }
