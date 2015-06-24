@@ -43,12 +43,14 @@ object Parse {
     val taggerOutputFile = outputFileOpt.getOrElse(java.io.File.createTempFile(File(taggerInputFile).getName.rsplit("\\.", 2).head, ".out").getAbsolutePath)
 
     System.err.println(f"Preparing to parse ${File(taggerInputFile).readLines.size} sentences")
-    EasyCCG.main(Array(
-      "--model", modelDir,
-      "--inputFile", taggerInputFile,
-      "--inputFormat", "tokenized",
-      "--outputFormat", "supertags",
-      "--outputFile", taggerOutputFile))
+    time("Running EasyCCG", {
+      EasyCCG.main(Array(
+        "--model", modelDir,
+        "--inputFile", taggerInputFile,
+        "--inputFormat", "tokenized",
+        "--outputFormat", "supertags",
+        "--outputFile", taggerOutputFile))
+    }, System.err.println)
     if (outputFileOpt.isEmpty) File(taggerOutputFile).readLines.foreach(println)
 
     evalFileOpt.foreach { evalFile =>
