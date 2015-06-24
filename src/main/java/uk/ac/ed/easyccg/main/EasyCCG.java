@@ -2,8 +2,10 @@ package uk.ac.ed.easyccg.main;
 
 import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
+import java.io.Writer;
 import java.text.DecimalFormat;
 import java.util.Collection;
 import java.util.InputMismatchException;
@@ -54,6 +56,9 @@ public class EasyCCG
 
     @Option(shortName="i", defaultValue="tokenized", description = "(Optional) Input Format: one of \"tokenized\", \"POStagged\", \"POSandNERtagged\", \"gold\", \"deps\" or \"supertagged\"")
     String getInputFormat();
+
+    @Option(defaultValue="", description = "(Optional) Path to the output text file. Otherwise, the parser will print to stdout.")
+    File getOutputFile();
 
     @Option(shortName="o", description = "Output Format: one of \"ccgbank\", \"html\", or \"prolog\"", defaultValue="ccgbank")
     String getOutputFormat();
@@ -196,8 +201,18 @@ public class EasyCCG
       usingGoldFile = false;
     }
 
-    final BufferedWriter sysout = new BufferedWriter(new OutputStreamWriter(System.out));
-    
+    Writer sysoutTemp;
+    if (commandLineOptions.getOutputFile().getName().isEmpty()) {
+      // Write to STDOUT
+      sysoutTemp = new OutputStreamWriter(System.out);
+    } else {
+      File outputFile = commandLineOptions.getOutputFile();
+      // Make the directory if it doesn't already exist
+      outputFile.getAbsoluteFile().getParentFile().mkdirs();
+      sysoutTemp = new FileWriter(outputFile);
+    }
+    final BufferedWriter sysout = new BufferedWriter(sysoutTemp);
+
     int id = 0;
     while (inputLines.hasNext()) { 
       // Read each sentence, either from STDIN or a parse.
