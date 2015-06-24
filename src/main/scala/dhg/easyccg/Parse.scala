@@ -10,17 +10,13 @@ object Parse {
 
   val WordPosCat = """(.*)\|([^|]*)\|([^|]*)""".r
 
-  // cd ~/bin/easyccg/; java -jar easyccg.jar --model training/chinese-embeddings/model.chinese-250k 
-  //                                          --inputFile chinese-dev-tokenized.txt  
-  //                                          --inputFormat tokenized  
-  //                                          --outputFormat supertags  
-  //                                          > training/chinese-embeddings/model.chinese-250k/chinese-dev-tokenized.out
-
-  // cd ~/bin/easyccg/; java -jar easyccg.jar --model data/chinese/chinese-embeddings/model.chinese-250k 
-  //                                          --inputFile data/chinese/chinese-dev-tokenized.txt  
-  //                                          --inputFormat tokenized  
-  //                                          --outputFormat supertags  
-  //                                          --outputFile data/chinese/chinese-250k/chinese-dev-tagged.out
+  /*  
+  --model        data/chinese/chinese-embeddings/model.chinese-250k 
+  --evalFile     data/chinese/dev_small/gold.stagged  
+  --outputFile   data/chinese/chinese-250k/chinese-dev-tagged.out
+  --inputFormat  tokenized  
+  --outputFormat supertags  
+  */
 
   def main(args: Array[String]): Unit = {
 
@@ -46,6 +42,7 @@ object Parse {
 
     val taggerOutputFile = outputFileOpt.getOrElse(java.io.File.createTempFile(File(taggerInputFile).getName.rsplit("\\.", 2).head, ".out").getAbsolutePath)
 
+    System.err.println(f"Preparing to parse ${File(taggerInputFile).readLines.size} sentences")
     EasyCCG.main(Array(
       "--model", modelDir,
       "--inputFile", taggerInputFile,
@@ -56,13 +53,16 @@ object Parse {
 
     evalFileOpt.foreach { evalFile =>
       val accuracy =
-        (File(evalFile).readLines zipSafe File(taggerOutputFile).readLines).zipWithIndex.map {
-          case ((WordPosCat(gw, gp, gc), WordPosCat(mw, mp, mc)), lineNum) =>
-            assert(gw == mw, f"words don't match: [$lineNum]  gold=$gw, model-output=$mw")
-            if (gc == mc) 1 else 0
+        (File(evalFile).readLines zipSafe File(taggerOutputFile).readLines).zipWithIndex.flatMap {
+          case ((evalLine, outputLine), lineNum) =>
+            (evalLine.splitWhitespace zipSafe outputLine.splitWhitespace).map {
+              case (WordPosCat(gw, gp, gc), WordPosCat(mw, mp, mc)) =>
+                assert(gw == mw, f"words don't match: [${lineNum + 1}]  gold=$gw, model-output=$mw")
+                if (gc == mc) 1 else 0
+            }
         }.avg
 
-      println(f"accuracy: $accuracy%.2f")
+      println(f"accuracy: ${accuracy * 100}%.2f")
     }
   }
 
