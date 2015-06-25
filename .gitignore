@@ -21,6 +21,7 @@ eclipse-bin/
 
 .DS_Store
 
+ccg
 condorfiles
 gfl_syntax
 human-annotated
