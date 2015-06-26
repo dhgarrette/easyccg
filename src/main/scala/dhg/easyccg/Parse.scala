@@ -2,6 +2,7 @@ package dhg.easyccg
 
 import dhg.util._
 import uk.ac.ed.easyccg.main.EasyCCG
+import dhg.ccg.cat.Cat
 
 /**
  * @author dhg
@@ -81,5 +82,6 @@ object Parse {
     }
   }
 
+  object StripCatParens { def unapply(in: String) = Some(if (in.contains("/") || in.contains("\\")) in.drop(1).dropRight(1) else in) }
 }
 
