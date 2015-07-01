@@ -1,14 +1,13 @@
 project/project/
 target/
-scala-util
-nlp
-condor-util
 results/
 eclipse-bin/
 /data/
 /bin
 
 .cache
+.cache-main
+.cache-tests
 .classpath
 .project
 .settings
@@ -19,7 +18,34 @@ eclipse-bin/
 *.out
 *.pdf
 
+errors.log
+tmp.pipe
+
 .DS_Store
+
+
+
+/autoToSupertags.sh
+/do_experiments_genia_candc.sh
+/do_experiments_genia.sh
+/do_experiments_wiki_candc.sh
+/do_experiments_wsj_candc_easyccg.sh
+/do_experiments_wsj_candc.sh
+/do_experiments.sh
+/do_training_rebank.sh
+/do_training.lua
+/do_training.sh
+/dump_model.lua
+/eval_test.py
+/features.lua
+/SGD.lua
+/splitEmbeddings.sh
+/train.lua
+/train.sh
+
+
+
+
 
 ccg
 condorfiles
@@ -27,7 +53,7 @@ gfl_syntax
 human-annotated
 parsimonious
 temp
-
-.cache-main
-.cache-tests
+scala-util
+nlp
+condor-util
 
