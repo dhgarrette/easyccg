@@ -1,11 +1,12 @@
 package dhg.easyccg
 
-import dhg.util._
-import uk.ac.ed.easyccg.main.EasyCCG
-import dhg.ccg.data._
 import java.io.BufferedWriter
-import dhg.ccg.parse._
+
 import dhg.ccg.cat._
+import dhg.ccg.data._
+import dhg.ccg.parse._
+import dhg.easyccg.Common.StripCatOuterParens
+import dhg.util._
 
 /**
  * @author dhg
@@ -39,7 +40,8 @@ object Train {
 
     val lang = options("lang")
     val embeddingsDir = options("embeddingsDir") // should contain a file `embeddings.raw`;  be sure to run `./splitEmbeddings.sh` on this folder
-    val numTrainTok = options("numTrainTok") match { case "all" => Int.MaxValue; case v => v.replaceAll("k$", "000").toInt } // e.g.: `250k` or `all`
+    val numTrainTok = options.get("numTrainTok") match { case Some("all") | None => Int.MaxValue; case Some(v) => v.replaceAll("k$", "000").toInt } // e.g.: `250k` or `all`
+    val minUnaryRuleCount = options.i("minUnaryRuleCount", 10)
     val trainDir = options("trainDir") // will create a file `gold.stagged` of the form `word|pos|supertag`, without indices
     val evalDir = options("evalDir") //   will create a file `gold.stagged` of the form `word|pos|supertag`, without indices
     val trainFiles = options("trainFiles")
@@ -53,77 +55,117 @@ object Train {
     System.err.println(f"trainFiles: $trainFiles")
     System.err.println(f"evalFiles: $evalFiles")
 
-    val reader: CcgbankReader = lang match {
+    val reader: TreeBankReader = new RebankingTreeBankReader(new SimpleRebanker(RebankRules.standard), lang match {
       case "chinese" => new ChineseCcgTreeBankReader
       case "english" => new EnglishCcgTreeBankReader
       //case "italian" => new ItalianCcgTreeBankReader
-    }
+    })
 
-    val trainData = time("read train data", for { fileNum <- RangeString(trainFiles); trees <- reader.readFileTrees(fileNum).toSeq; t <- trees } yield t, System.err.println)
-    val evalData = time("read dev data", for { fileNum <- RangeString(evalFiles); trees <- reader.readFileTrees(fileNum).toSeq; t <- trees } yield t, System.err.println)
-
+    val trainData = time("read train data", new StoppingCountTreeIterator(for { fileNum <- RangeString(trainFiles).iterator; trees <- reader.readFileTrees(fileNum).toSeq; t <- trees } yield t, numTrainTok).toVector.init, System.err.println)
     System.err.println(f"trainData: ${trainData.size} sentences, ${trainData.sumBy(_.length)} tokens")
-    System.err.println(f"evalData: ${evalData.size} sentences, ${evalData.sumBy(_.length)} tokens")
+    writeUsing(File(trainDir, "gold.stagged")) { f => writeSentences(trainData, f) }
 
-    writeUsing(File(trainDir, "gold.stagged")) { f => writeSentences(trainData, f, numTrainTok) }
-    writeUsing(File(evalDir, "gold.stagged")) { f => writeSentences(evalData, f, Int.MaxValue) }
+    val evalFile = File(evalDir, "gold.stagged")
+    if (!evalFile.exists) {
+      val evalData = time("read dev data", for { fileNum <- RangeString(evalFiles); trees <- reader.readFileTrees(fileNum).toSeq; t <- trees } yield t, System.err.println)
+      System.err.println(f"evalData: ${evalData.size} sentences, ${evalData.sumBy(_.length)} tokens")
+      writeUsing(evalFile) { f => writeSentences(evalData, f) }
+    }
+    else
+      System.err.println(f"Eval data already exists; skipping generation.  ${evalFile}")
 
-    makeUnaryRuleFile(trainData, trainDir, lang)
-
-    
-    if(!File(embeddingsDir, "embeddings.words").exists) {
-      // ./training/splitEmbeddings.sh data/english/embeddings
-      time("splitting embeddings", Subprocess("/bin/sh", File(sys.env("HOME"), "workspace/easyccg/training/splitEmbeddings.sh").getAbsolutePath, embeddingsDir).call(), System.err.println)
+    if (!File(embeddingsDir, "embeddings.words").exists) {
+      // ./splitEmbeddings.sh data/english/embeddings
+      time("splitting embeddings", Subprocess("/bin/sh", File(sys.env("HOME"), "workspace/easyccg/splitEmbeddings.sh").getAbsolutePath, embeddingsDir).call(), System.err.println)
     }
 
     val jobName = File(trainDir).name
-    val doTrainingArgs = Vector(File(sys.env("HOME"), "workspace/easyccg/training/do_training.sh").getAbsolutePath, jobName,
+    val doTrainingArgs = Vector(File(sys.env("HOME"), "workspace/easyccg/do_training.sh").getAbsolutePath, jobName,
       File(sys.env("HOME"), "workspace/easyccg", embeddingsDir).getAbsolutePath,
       File(sys.env("HOME"), "workspace/easyccg", trainDir).getAbsolutePath,
       File(sys.env("HOME"), "workspace/easyccg", evalDir).getAbsolutePath)
     println(s"cd ${File(sys.env("HOME"), "workspace/easyccg/training")}; ${doTrainingArgs.mkString(" ")}")
-    Subprocess("/bin/sh", doTrainingArgs: _*).call()
+    Subprocess("/bin/sh", doTrainingArgs: _*).callWithStreams(System.out, System.err)
 
     val supertaggerAccuracy = File(embeddingsDir, s"train.${jobName}/log").readLines.toVector.takeRight(2).head.splitWhitespace.last.toDouble
     println(f"Eval set supertagger accuracy: ${supertaggerAccuracy * 100}%.2f")
 
+    val modelDir = File(embeddingsDir, s"model.${jobName}").getAbsolutePath
+    makeUnaryRuleFile(trainData, modelDir, lang, minUnaryRuleCount)
+
+    //
+    //
+    //
+
+    System.err.println("Done training supertagger. Now parsing to get supertag accuracy on output of the tagger.")
+    Parse.run(modelDir, inputFileOpt = None,
+      evalFileOpt = Some(evalFile.getAbsolutePath),
+      outputFileOpt = Some(File(modelDir, s"dev.stagged").getAbsolutePath),
+      maxLength = 70,
+      numEvalSentences = Int.MaxValue)
+    println(f"Eval set supertagger accuracy: ${supertaggerAccuracy * 100}%.2f")
   }
 
-  def makeUnaryRuleFile(trainData: Vector[CcgTree], trainDir: String, lang: String) = {
-    time("count unary rule", {
-      def traverse(t: CcgTree, i: Int, j: Int): Vector[(Cat, Cat)] = t match {
+  def makeUnaryRuleFile(trainData: Vector[CcgTree], modelDir: String, lang: String, minUnaryRuleCount: Int) = {
+    time("count unary rules", {
+      def findUnaryRules(t: CcgTree, i: Int, j: Int): Vector[(Cat, Cat)] = t match {
         case CcgLeaf(cat, word, _) => Vector()
-        case CcgUnode(cat, s) => (s.cat.noIndices -> cat.noIndices) +: traverse(s, i, j)
-        case CcgBinode(cat, l, r) => traverse(l, i, i + l.length) ++ traverse(r, i + l.length, j)
+        case CcgUnode(cat, s) => (s.cat.noIndices -> cat.noIndices) +: findUnaryRules(s, i, j)
+        case CcgBinode(cat, l, r) => findUnaryRules(l, i, i + l.length) ++ findUnaryRules(r, i + l.length, j)
       }
-      val unaryRuleCounts = trainData.flatMap(t => traverse(t, 0, t.length)).counts.desc // pairs (child, parent)
-      unaryRuleCounts.foreach { case ((child, parent), count) => println(f"$count%5d   $child   $parent") }
-
-      writeUsing(File(trainDir, "unaryRules")) { f =>
+      val unaryRuleCounts = trainData.flatMap(t => findUnaryRules(t, 0, t.length)).counts.desc // pairs (child, parent)
+      for (((child, parent), count) <- unaryRuleCounts) {
+        println(f"$count%5d   ${StripCatOuterParens(child)}   ${StripCatOuterParens(parent)}")
+      }
+      writeUsing(File(modelDir, "unaryRules")) { f =>
         val unaryRules = lang match {
-          case "chinese" => unaryRuleCounts.collect { case ((child, parent), count) if count >= 10 => (child, parent) }
+          case "chinese" => unaryRuleCounts.collect { case ((child, parent), count) if count >= minUnaryRuleCount => (child, parent) }
           case "english" => Vector(
-            ("""N""", """NP"""),
-            ("""(S[pss]\NP)""", """(N\N)"""),
-            ("""(S[ng]\NP)""", """(N\N)"""),
-            ("""(S[adj]\NP)""", """(N\N)"""),
-            ("""(S[dcl]/NP)""", """(N\N)"""),
-            ("""(S[to]\NP)""", """(S/S)"""),
-            ("""(S[pss]\NP)""", """(S/S)"""),
-            ("""(S[ng]\NP)""", """(S/S)"""),
-            ("""NP""", """(S[X]/(S[X]\NP))"""),
-            ("""NP""", """((S[X]\NP)\((S[X]\NP)/NP))"""),
-            ("""PP""", """((S[X]\NP)\((S[X]\NP)/PP))"""))
+            (cat"""N""", cat"""NP"""),
+            (cat"""(S[pss]\NP)""", cat"""(N\N)"""),
+            (cat"""(S[ng]\NP)""", cat"""(N\N)"""),
+            (cat"""(S[adj]\NP)""", cat"""(N\N)"""),
+            (cat"""(S[dcl]/NP)""", cat"""(N\N)"""),
+            (cat"""(S[to]\NP)""", cat"""(S/S)"""),
+            (cat"""(S[pss]\NP)""", cat"""(S/S)"""),
+            (cat"""(S[ng]\NP)""", cat"""(S/S)"""),
+            (cat"""NP""", cat"""(S[X]/(S[X]\NP))"""),
+            (cat"""NP""", cat"""((S[X]\NP)\((S[X]\NP)/NP))"""),
+            (cat"""PP""", cat"""((S[X]\NP)\((S[X]\NP)/PP))"""))
         }
-        unaryRules.foreach { case (child, parent) => f.wl(f"$child    $parent") }
+        unaryRules.foreach { case (child, parent) => f.wl(s"${StripCatOuterParens(child.noIndices).replace("[conj]", "")} ${StripCatOuterParens(parent.noIndices).replace("[conj]", "")}") }
+      }
+    }, System.err.println)
+
+    time("count binary rules", {
+      def findBinaryRules(t: CcgTree, i: Int, j: Int): Vector[String] = t match {
+        case CcgLeaf(cat, word, _) => Vector()
+        case CcgUnode(cat, s) => findBinaryRules(s, i, j)
+        case CcgBinode(cat, l, r) => (s"${StripCatOuterParens(l.cat.noIndices).replace("[conj]", "")} ${StripCatOuterParens(r.cat.noIndices).replace("[conj]", "")}") +: (findBinaryRules(l, i, i + l.length) ++ findBinaryRules(r, i + l.length, j))
+      }
+      val binaryRuleCounts = trainData.flatMap(t => findBinaryRules(t, 0, t.length)).counts.desc
+      writeUsing(File(modelDir, "seenRules")) { f =>
+        val binaryRules = binaryRuleCounts.collect { case (entry, count) if count >= 0 => entry }
+        binaryRules.foreach(f.wl)
       }
     }, System.err.println)
   }
 
-  def writeSentences(trees: Vector[CcgTree], writer: BufferedWriter, tokCount: Int): Unit = {
-    trees.map(_.wordposcats).takeSub(tokCount).foreach { sentence =>
-      writer.wl(sentence.map { case (w, p, c) => f"$w|$p|${c.noIndices}" }.mkString(" "))
+  def writeSentences(trees: Vector[CcgTree], writer: BufferedWriter): Unit = {
+    trees.map(_.wordposcats).foreach { sentence =>
+      writer.wl(sentence.map { case (w, p, c) => f"$w|$p|${StripCatOuterParens(c.noIndices)}" }.mkString(" "))
     }
   }
+
+  class StoppingCountTreeIterator(sub: Iterator[CcgTree], stoppingCount: Int) extends Iterator[CcgTree] {
+    private[this] var countSoFar = 0
+    def next() = {
+      val t = sub.next()
+      countSoFar += t.length
+      t
+    }
+    def hasNext = sub.hasNext && (countSoFar <= stoppingCount)
+  }
+
 }
 

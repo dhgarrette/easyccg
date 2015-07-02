@@ -196,11 +196,6 @@ public class ParserAStar implements Parser
   {
     results.totalSentences.incrementAndGet();
 
-    if (input.length() >= maxLength) {
-      System.err.println("Skipping sentence of length " + input.length());
-      return null;
-    }
-    
     List<SyntaxTreeNode> parses = doParsing(input);
     
     if (parses != null) {

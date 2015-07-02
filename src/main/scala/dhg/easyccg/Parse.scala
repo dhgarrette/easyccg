@@ -12,17 +12,19 @@ object Parse {
   val WordPosCat = """(.*)\|([^|]*)\|([^|]*)""".r
 
   /*  
-  --model        data/english/embeddings/model.train-250k 
-  --goldFile     data/english/dev/gold.stagged
-  --outputFile   data/english/embeddings/model.train-250k/english-dev-tagged.out
-  --inputFormat  tokenized
-  --outputFormat supertags
+  --model            data/english/embeddings/model.train-250k 
+  --evalFile         data/english/dev/gold.stagged
+  --outputFile       data/english/embeddings/model.train-250k/english-dev-tagged.out
+  --maxLength  50
+//  --inputFormat      tokenized
+//  --outputFormat     supertags
 
-  --model        data/chinese/embeddings/model.train-250k 
-  --goldFile     data/chinese/dev/gold.stagged
-  --outputFile   data/chinese/embeddings/model.train-250k/chinese-dev-tagged.out
-  --inputFormat  tokenized
-  --outputFormat supertags
+  --model            data/chinese/embeddings/model.train-250k 
+  --evalFile         data/chinese/dev/gold.stagged
+  --outputFile       data/chinese/embeddings/model.train-250k/chinese-dev-tagged.out
+  --maxLength  50
+//  --inputFormat      tokenized
+//  --outputFormat     supertags
   */
 
   def main(args: Array[String]): Unit = {
@@ -31,39 +33,49 @@ object Parse {
 
     val modelDir = options("model") // training/embeddings/model.chinese-250k
     val inputFileOpt = options.get("inputFile") // tokenized
-    val goldFileOpt = options.get("goldFile") // word|pos|supertag
+    val evalFileOpt = options.get("evalFile") // word|pos|supertag
     val outputFileOpt = options.get("outputFile") // outputs as: word|pos|supertag
+    val maxLength = options.i("maxLength", 1000)
+    val numEvalSentences = options.i("numEvalSentences", Int.MaxValue)
+    run(modelDir, inputFileOpt, evalFileOpt, outputFileOpt, maxLength, numEvalSentences)
 
-    val taggerInputFile = (inputFileOpt, goldFileOpt) match {
+  }
+
+  def run(modelDir: String, inputFileOpt: Option[String], evalFileOpt: Option[String], outputFileOpt: Option[String], maxLength: Int, numEvalSentences: Int = Int.MaxValue) = {
+    System.err.println(s"target/start dhg.easyccg.Parse --model $modelDir ${inputFileOpt.fold(""){s => s"--inputFile $s"}} ${evalFileOpt.fold(""){s => s"--evalFile $s"}} ${outputFileOpt.fold(""){s => s"--outputFile $s"}} --maxLength $maxLength --numEvalSentences $numEvalSentences")
+    
+    val taggerInputFile = (inputFileOpt, evalFileOpt) match {
       case (Some(inputFile), None) => inputFile
-      case (None, Some(goldFile)) =>
-        val fakedInputFile = java.io.File.createTempFile(File(goldFile).getName.rsplit("\\.", 2).head, ".in")
+      case (None, Some(evalFile)) =>
+        val fakedInputFile = java.io.File.createTempFile(File(evalFile).getName.rsplit("\\.", 2).head, ".in")
         writeUsing(fakedInputFile) { w =>
-          File(goldFile).readLines.foreach { line =>
+          File(evalFile).readLines.take(numEvalSentences).foreach { line =>
             w.wl(line.splitWhitespace.map { case WordPosCat(w, p, c) => w }.mkString(" "))
           }
         }
         fakedInputFile.getAbsolutePath
-      case _ => sys.error("specify exactly one of --inputFile or --goldFile")
+      case _ => sys.error("specify exactly one of --inputFile or --evalFile")
     }
 
     val taggerOutputFile = outputFileOpt.getOrElse(java.io.File.createTempFile(File(taggerInputFile).getName.rsplit("\\.", 2).head, ".out").getAbsolutePath)
 
     System.err.println(f"Preparing to parse ${File(taggerInputFile).readLines.size} sentences")
-    time("Running EasyCCG", {
-      EasyCCG.main(Array(
-        "--model", modelDir,
-        "--inputFile", taggerInputFile,
-        "--inputFormat", "tokenized",
-        "--outputFormat", "supertags",
-        "--outputFile", taggerOutputFile))
-    }, System.err.println)
+    val easyccgArgs = Array(
+      "--model", modelDir,
+      "--inputFile", taggerInputFile,
+      "--inputFormat", "tokenized",
+      "--outputFormat", "supertags",
+      "--outputFile", taggerOutputFile,
+      "--timing",
+      "--maxLength", maxLength.toString)
+      println(f"Running target/start uk.ac.ed.easyccg.main.EasyCCG ${easyccgArgs.mkString(" ")}")
+    time("Running EasyCCG", EasyCCG.main(easyccgArgs), System.err.println)
     if (outputFileOpt.isEmpty) File(taggerOutputFile).readLines.foreach(println)
 
     //val taggerOutputFile = outputFileOpt.get
-    goldFileOpt.foreach { goldFile =>
+    evalFileOpt.foreach { evalFile =>
       val accuracy =
-        (File(goldFile).readLines zip /*Safe*/ File(taggerOutputFile).readLines).zipWithIndex.flatMap {
+        (File(evalFile).readLines zip /*Safe*/ File(taggerOutputFile).readLines).zipWithIndex.flatMap {
           case ((goldLine, outputLine), lineNum) =>
             val goldTokens = goldLine.splitWhitespace
             val outputTokens = outputLine.splitWhitespace
@@ -78,10 +90,8 @@ object Parse {
             else Vector.fill(outputLine.splitWhitespace.length)(0)
         }.avg
 
-      println(f"accuracy: ${accuracy * 100}%.2f")
+      println(f"Supertag accuracy from easyccg parser: ${accuracy * 100}%.2f")
     }
   }
-
-  object StripCatParens { def unapply(in: String) = Some(if (in.contains("/") || in.contains("\\")) in.drop(1).dropRight(1) else in) }
 }
 
